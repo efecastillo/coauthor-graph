@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Coauthorship Graph</title>
+  <script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
+  <script src="/socket.io/socket.io.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Georgia', serif;
+      background: #f4f1eb;
+      color: #222;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    header {
+      background: #2c3e50;
+      color: #ecf0f1;
+      padding: 10px 20px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    header h1 {
+      font-size: 1.1rem;
+      font-weight: normal;
+      letter-spacing: 0.05em;
+      white-space: nowrap;
+    }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      flex: 1;
+    }
+
+    input[type="text"] {
+      padding: 5px 10px;
+      border: 1px solid #7f8c8d;
+      border-radius: 4px;
+      background: #ecf0f1;
+      color: #222;
+      font-size: 0.9rem;
+      width: 180px;
+    }
+
+    button {
+      padding: 5px 12px;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      font-family: inherit;
+    }
+
+    #btn-add-self   { background: #27ae60; color: #fff; }
+    #btn-add-other  { background: #2980b9; color: #fff; }
+    #btn-edge-mode  { background: #8e44ad; color: #fff; }
+    #btn-delete     { background: #c0392b; color: #fff; }
+    #btn-clear      { background: #7f8c8d; color: #fff; }
+    #btn-export     { background: #d35400; color: #fff; }
+
+    button:hover { filter: brightness(1.15); }
+    button.active { outline: 3px solid #f1c40f; }
+
+    #status-bar {
+      font-size: 0.8rem;
+      color: #bdc3c7;
+      margin-left: auto;
+      white-space: nowrap;
+    }
+
+    #graph-container {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+    }
+
+    #network {
+      width: 100%;
+      height: 100%;
+    }
+
+    #instructions {
+      position: absolute;
+      bottom: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(44,62,80,0.85);
+      color: #ecf0f1;
+      padding: 6px 14px;
+      border-radius: 20px;
+      font-size: 0.78rem;
+      pointer-events: none;
+      white-space: nowrap;
+    }
+
+    /* Modal */
+    #modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.45);
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+    }
+    #modal-overlay.open { display: flex; }
+
+    #modal {
+      background: #fff;
+      border-radius: 8px;
+      padding: 24px;
+      min-width: 280px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.25);
+    }
+
+    #modal h2 { margin-bottom: 12px; font-size: 1rem; }
+    #modal input { width: 100%; margin-bottom: 12px; }
+    #modal-color { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 0.85rem; }
+    #modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+    #modal-actions button { padding: 6px 16px; }
+    #btn-modal-ok { background: #27ae60; color: #fff; }
+    #btn-modal-cancel { background: #95a5a6; color: #fff; }
+
+    #edge-hint {
+      display: none;
+      position: absolute;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #8e44ad;
+      color: #fff;
+      padding: 6px 16px;
+      border-radius: 20px;
+      font-size: 0.82rem;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Coauthorship Graph</h1>
+  <div class="toolbar">
+    <button id="btn-add-self">+ Add Me</button>
+    <button id="btn-add-other">+ Add Person</button>
+    <button id="btn-edge-mode">Connect</button>
+    <button id="btn-delete">Delete Selected</button>
+    <button id="btn-clear">Clear All</button>
+    <button id="btn-export">Export PNG</button>
+  </div>
+  <div id="status-bar">Connected: 0</div>
+</header>
+
+<div id="graph-container">
+  <div id="network"></div>
+  <div id="edge-hint">Click first node, then second node to connect them. Press Esc to cancel.</div>
+  <div id="instructions">Drag nodes to reposition · Double-click node to rename · Scroll to zoom</div>
+</div>
+
+<!-- Add/Edit Node Modal -->
+<div id="modal-overlay">
+  <div id="modal">
+    <h2 id="modal-title">Add Person</h2>
+    <input type="text" id="modal-name" placeholder="Name" maxlength="60" />
+    <div id="modal-color">
+      <label for="modal-color-input">Color:</label>
+      <input type="color" id="modal-color-input" value="#97c2fc" />
+    </div>
+    <div id="modal-actions">
+      <button id="btn-modal-cancel">Cancel</button>
+      <button id="btn-modal-ok">OK</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  const socket = io();
+  const statusBar = document.getElementById('status-bar');
+
+  // ─── vis-network setup ───────────────────────────────────────────────────────
+  const nodes = new vis.DataSet();
+  const edges = new vis.DataSet();
+
+  const container = document.getElementById('network');
+  const network = new vis.Network(
+    container,
+    { nodes, edges },
+    {
+      physics: {
+        enabled: true,
+        solver: 'forceAtlas2Based',
+        forceAtlas2Based: { gravitationalConstant: -50, springLength: 120 },
+        stabilization: { iterations: 100 },
+      },
+      interaction: {
+        hover: true,
+        multiselect: true,
+        dragNodes: true,
+        tooltipDelay: 200,
+      },
+      nodes: {
+        shape: 'ellipse',
+        font: { size: 14, face: 'Georgia' },
+        borderWidth: 2,
+        shadow: true,
+      },
+      edges: {
+        width: 2,
+        color: { color: '#848484', highlight: '#333' },
+        smooth: { type: 'continuous' },
+        shadow: true,
+      },
+      manipulation: { enabled: false },
+    }
+  );
+
+  // ─── Socket events ───────────────────────────────────────────────────────────
+  socket.on('init', ({ nodes: ns, edges: es }) => {
+    nodes.clear();
+    edges.clear();
+    nodes.add(ns.map(toVisNode));
+    edges.add(es.map(toVisEdge));
+  });
+
+  socket.on('node-added',   (n) => nodes.update(toVisNode(n)));
+  socket.on('node-updated', (n) => nodes.update(toVisNode(n)));
+  socket.on('node-deleted', ({ id, removedEdgeIds }) => {
+    nodes.remove(id);
+    removedEdgeIds.forEach((eid) => edges.remove(eid));
+  });
+  socket.on('edge-added',   (e) => edges.update(toVisEdge(e)));
+  socket.on('edge-deleted', (id) => edges.remove(id));
+  socket.on('graph-cleared', () => { nodes.clear(); edges.clear(); });
+
+  socket.on('connect-count', (n) => { statusBar.textContent = `Connected: ${n}`; });
+
+  function toVisNode(n) {
+    return { id: n.id, label: n.label, x: n.x, y: n.y, color: { background: n.color, border: '#2c3e50' } };
+  }
+  function toVisEdge(e) {
+    return { id: e.id, from: e.from, to: e.to };
+  }
+
+  // Emit position after user drags a node
+  network.on('dragEnd', (params) => {
+    params.nodes.forEach((id) => {
+      const pos = network.getPosition(id);
+      socket.emit('update-node', { id, x: pos.x, y: pos.y });
+    });
+  });
+
+  // ─── Modal ───────────────────────────────────────────────────────────────────
+  const overlay   = document.getElementById('modal-overlay');
+  const modalName = document.getElementById('modal-name');
+  const modalColor= document.getElementById('modal-color-input');
+  const modalTitle= document.getElementById('modal-title');
+  let modalCallback = null;
+
+  function openModal(title, defaultName = '', defaultColor = '#97c2fc', cb) {
+    modalTitle.textContent = title;
+    modalName.value = defaultName;
+    modalColor.value = defaultColor;
+    modalCallback = cb;
+    overlay.classList.add('open');
+    setTimeout(() => modalName.focus(), 50);
+  }
+
+  function closeModal() {
+    overlay.classList.remove('open');
+    modalCallback = null;
+  }
+
+  document.getElementById('btn-modal-cancel').addEventListener('click', closeModal);
+  document.getElementById('btn-modal-ok').addEventListener('click', () => {
+    const name = modalName.value.trim();
+    if (!name) { modalName.focus(); return; }
+    modalCallback && modalCallback(name, modalColor.value);
+    closeModal();
+  });
+  modalName.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') document.getElementById('btn-modal-ok').click();
+    if (e.key === 'Escape') closeModal();
+  });
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
+
+  // ─── Add Me ──────────────────────────────────────────────────────────────────
+  document.getElementById('btn-add-self').addEventListener('click', () => {
+    openModal('Add Yourself', '', '#97c2fc', (name, color) => {
+      const pos = network.getViewPosition();
+      socket.emit('add-node', { label: name, color, x: pos.x + (Math.random()-0.5)*200, y: pos.y + (Math.random()-0.5)*200 });
+    });
+  });
+
+  // ─── Add Other Person ────────────────────────────────────────────────────────
+  document.getElementById('btn-add-other').addEventListener('click', () => {
+    openModal('Add Person', '', '#f0a500', (name, color) => {
+      const pos = network.getViewPosition();
+      socket.emit('add-node', { label: name, color, x: pos.x + (Math.random()-0.5)*200, y: pos.y + (Math.random()-0.5)*200 });
+    });
+  });
+
+  // ─── Double-click to rename ───────────────────────────────────────────────────
+  network.on('doubleClick', (params) => {
+    if (params.nodes.length === 1) {
+      const id = params.nodes[0];
+      const node = nodes.get(id);
+      openModal('Rename Node', node.label, node.color?.background ?? '#97c2fc', (name, color) => {
+        socket.emit('update-node', { id, label: name, color });
+      });
+    }
+  });
+
+  // ─── Edge mode ───────────────────────────────────────────────────────────────
+  let edgeMode = false;
+  let edgeFirst = null;
+  const edgeBtn  = document.getElementById('btn-edge-mode');
+  const edgeHint = document.getElementById('edge-hint');
+
+  function setEdgeMode(on) {
+    edgeMode = on;
+    edgeFirst = null;
+    edgeBtn.classList.toggle('active', on);
+    edgeHint.style.display = on ? 'block' : 'none';
+    network.setOptions({ interaction: { dragNodes: !on } });
+  }
+
+  edgeBtn.addEventListener('click', () => setEdgeMode(!edgeMode));
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      setEdgeMode(false);
+      closeModal();
+    }
+    if ((e.key === 'Delete' || e.key === 'Backspace') && document.activeElement === document.body) {
+      deleteSelected();
+    }
+  });
+
+  network.on('click', (params) => {
+    if (!edgeMode) return;
+    if (params.nodes.length === 1) {
+      if (edgeFirst === null) {
+        edgeFirst = params.nodes[0];
+        nodes.update({ id: edgeFirst, borderWidth: 4 });
+        edgeHint.textContent = 'Now click the second node…';
+      } else {
+        const second = params.nodes[0];
+        if (second !== edgeFirst) {
+          socket.emit('add-edge', { from: edgeFirst, to: second });
+        }
+        nodes.update({ id: edgeFirst, borderWidth: 2 });
+        edgeFirst = null;
+        edgeHint.textContent = 'Click first node, then second node to connect them. Press Esc to cancel.';
+        setEdgeMode(false);
+      }
+    } else if (params.nodes.length === 0 && params.edges.length === 0) {
+      // Clicked empty space — cancel first selection
+      if (edgeFirst !== null) {
+        nodes.update({ id: edgeFirst, borderWidth: 2 });
+        edgeFirst = null;
+        edgeHint.textContent = 'Click first node, then second node to connect them. Press Esc to cancel.';
+      }
+    }
+  });
+
+  // Right-click on edge to delete
+  network.on('oncontext', (params) => {
+    params.event.preventDefault();
+    if (params.edges.length === 1 && params.nodes.length === 0) {
+      if (confirm('Delete this collaboration edge?')) {
+        socket.emit('delete-edge', params.edges[0]);
+      }
+    }
+  });
+
+  // ─── Delete selected ─────────────────────────────────────────────────────────
+  function deleteSelected() {
+    const sel = network.getSelection();
+    sel.nodes.forEach((id) => socket.emit('delete-node', id));
+    sel.edges.forEach((id) => socket.emit('delete-edge', id));
+  }
+  document.getElementById('btn-delete').addEventListener('click', deleteSelected);
+
+  // ─── Clear all ───────────────────────────────────────────────────────────────
+  document.getElementById('btn-clear').addEventListener('click', () => {
+    if (confirm('Clear the entire graph? This cannot be undone.')) {
+      socket.emit('clear-graph');
+    }
+  });
+
+  // ─── Export PNG ──────────────────────────────────────────────────────────────
+  document.getElementById('btn-export').addEventListener('click', () => {
+    const canvas = container.querySelector('canvas');
+    if (!canvas) return;
+    const link = document.createElement('a');
+    link.download = 'coauthorship-graph.png';
+    link.href = canvas.toDataURL('image/png');
+    link.click();
+  });
+</script>
+</body>
+</html>
