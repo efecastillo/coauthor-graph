@@ -76,6 +76,12 @@
     #status-bar {
       font-size: 0.8rem;
       color: #bdc3c7;
+      white-space: nowrap;
+    }
+
+    #stats-bar {
+      font-size: 0.8rem;
+      color: #bdc3c7;
       margin-left: auto;
       white-space: nowrap;
     }
@@ -161,6 +167,7 @@
     <button id="btn-export">Export PNG</button>
   </div>
   <div id="status-bar">Connected: 0</div>
+    <div id="stats-bar">Nodes: 0 · Edges: 0 · Avg degree: —</div>
 </header>
 
 <div id="graph-container">
@@ -188,6 +195,26 @@
 <script>
   const socket = io();
   const statusBar = document.getElementById('status-bar');
+  const statsBar  = document.getElementById('stats-bar');
+
+  const CODEWORD = 'sierpinski';
+
+  function promptCodeword(cb) {
+    const entered = window.prompt('Enter the codeword to delete nodes:');
+    if (entered === null) return;
+    if (entered.trim().toLowerCase() === CODEWORD) {
+      cb();
+    } else {
+      alert('Incorrect codeword.');
+    }
+  }
+
+  function updateStats() {
+    const n = nodes.length;
+    const e = edges.length;
+    const avgDeg = n > 0 ? ((2 * e) / n).toFixed(2) : '—';
+    statsBar.textContent = `Nodes: ${n} · Edges: ${e} · Avg degree: ${avgDeg}`;
+  }
 
   // ─── vis-network setup ───────────────────────────────────────────────────────
   const nodes = new vis.DataSet();
@@ -232,17 +259,19 @@
     edges.clear();
     nodes.add(ns.map(toVisNode));
     edges.add(es.map(toVisEdge));
+    updateStats();
   });
 
-  socket.on('node-added',   (n) => nodes.update(toVisNode(n)));
+  socket.on('node-added',   (n) => { nodes.update(toVisNode(n)); updateStats(); });
   socket.on('node-updated', (n) => nodes.update(toVisNode(n)));
   socket.on('node-deleted', ({ id, removedEdgeIds }) => {
     nodes.remove(id);
     removedEdgeIds.forEach((eid) => edges.remove(eid));
+    updateStats();
   });
-  socket.on('edge-added',   (e) => edges.update(toVisEdge(e)));
-  socket.on('edge-deleted', (id) => edges.remove(id));
-  socket.on('graph-cleared', () => { nodes.clear(); edges.clear(); });
+  socket.on('edge-added',   (e) => { edges.update(toVisEdge(e)); updateStats(); });
+  socket.on('edge-deleted', (id) => { edges.remove(id); updateStats(); });
+  socket.on('graph-cleared', () => { nodes.clear(); edges.clear(); updateStats(); });
 
   socket.on('connect-count', (n) => { statusBar.textContent = `Connected: ${n}`; });
 
@@ -344,7 +373,7 @@
       closeModal();
     }
     if ((e.key === 'Delete' || e.key === 'Backspace') && document.activeElement === document.body) {
-      deleteSelected();
+      deleteSelected(); // already gates nodes behind codeword
     }
   });
 
@@ -388,16 +417,24 @@
   // ─── Delete selected ─────────────────────────────────────────────────────────
   function deleteSelected() {
     const sel = network.getSelection();
-    sel.nodes.forEach((id) => socket.emit('delete-node', id));
+    // Edges: anyone can delete
     sel.edges.forEach((id) => socket.emit('delete-edge', id));
+    // Nodes: require codeword
+    if (sel.nodes.length > 0) {
+      promptCodeword(() => {
+        sel.nodes.forEach((id) => socket.emit('delete-node', id));
+      });
+    }
   }
   document.getElementById('btn-delete').addEventListener('click', deleteSelected);
 
   // ─── Clear all ───────────────────────────────────────────────────────────────
   document.getElementById('btn-clear').addEventListener('click', () => {
-    if (confirm('Clear the entire graph? This cannot be undone.')) {
-      socket.emit('clear-graph');
-    }
+    promptCodeword(() => {
+      if (confirm('Clear the entire graph? This cannot be undone.')) {
+        socket.emit('clear-graph');
+      }
+    });
   });
 
   // ─── Export PNG ──────────────────────────────────────────────────────────────
