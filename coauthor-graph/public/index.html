@@ -69,6 +69,8 @@
     #btn-delete     { background: #c0392b; color: #fff; }
     #btn-clear      { background: #7f8c8d; color: #fff; }
     #btn-export     { background: #d35400; color: #fff; }
+    #btn-shortest   { background: #16a085; color: #fff; }
+    #btn-clear-path { background: #7f8c8d; color: #fff; display: none; }
 
     button:hover { filter: brightness(1.15); }
     button.active { outline: 3px solid #f1c40f; }
@@ -162,6 +164,8 @@
     <button id="btn-add-self">+ Add Me</button>
     <button id="btn-add-other">+ Add Person</button>
     <button id="btn-edge-mode">Connect</button>
+    <button id="btn-shortest">Shortest Path</button>
+    <button id="btn-clear-path">Clear Path</button>
     <button id="btn-delete">Delete Selected</button>
     <button id="btn-clear">Clear All</button>
     <button id="btn-export">Export PNG</button>
@@ -173,6 +177,7 @@
 <div id="graph-container">
   <div id="network"></div>
   <div id="edge-hint">Click first node, then second node to connect them. Press Esc to cancel.</div>
+  <div id="path-hint" style="display:none;position:absolute;top:10px;left:50%;transform:translateX(-50%);background:#16a085;color:#fff;padding:6px 16px;border-radius:20px;font-size:0.82rem;pointer-events:none;">Click the first node for the path…</div>
   <div id="instructions">Drag nodes to reposition · Double-click node to rename · Scroll to zoom</div>
 </div>
 
@@ -370,6 +375,8 @@
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       setEdgeMode(false);
+      setPathMode(false);
+      clearPathHighlight();
       closeModal();
     }
     if ((e.key === 'Delete' || e.key === 'Backspace') && document.activeElement === document.body) {
@@ -378,6 +385,22 @@
   });
 
   network.on('click', (params) => {
+    // ── Path mode ──
+    if (pathMode) {
+      if (params.nodes.length === 1) {
+        if (pathFirst === null) {
+          pathFirst = params.nodes[0];
+          nodes.update({ id: pathFirst, borderWidth: 5 });
+          pathHint.textContent = 'Now click the second node…';
+        } else {
+          const second = params.nodes[0];
+          nodes.update({ id: pathFirst, borderWidth: 2 });
+          setPathMode(false);
+          if (second !== pathFirst) highlightPath(pathFirst, second);
+        }
+      }
+      return;
+    }
     if (!edgeMode) return;
     if (params.nodes.length === 1) {
       if (edgeFirst === null) {
@@ -436,6 +459,116 @@
       }
     });
   });
+
+  // ─── Shortest Path ───────────────────────────────────────────────────────────
+  let pathMode = false;
+  let pathFirst = null;
+  let highlightedNodes = [];
+  let highlightedEdges = [];
+  const pathHint     = document.getElementById('path-hint');
+  const btnShortest  = document.getElementById('btn-shortest');
+  const btnClearPath = document.getElementById('btn-clear-path');
+
+  function setPathMode(on) {
+    pathMode = on;
+    pathFirst = null;
+    btnShortest.classList.toggle('active', on);
+    pathHint.style.display = on ? 'block' : 'none';
+    pathHint.textContent = 'Click the first node for the path…';
+    network.setOptions({ interaction: { dragNodes: !on } });
+  }
+
+  function clearPathHighlight() {
+    highlightedNodes.forEach(({ id, borderWidth, color }) => {
+      nodes.update({ id, borderWidth, color });
+    });
+    highlightedEdges.forEach(({ id, color, width }) => {
+      edges.update({ id, color, width });
+    });
+    highlightedNodes = [];
+    highlightedEdges = [];
+    btnClearPath.style.display = 'none';
+  }
+
+  function bfsShortestPath(fromId, toId) {
+    // Build adjacency: nodeId -> [{neighborId, edgeId}]
+    const adj = {};
+    nodes.getIds().forEach((id) => { adj[id] = []; });
+    edges.get().forEach((e) => {
+      adj[e.from]?.push({ neighbor: e.to,   edgeId: e.id });
+      adj[e.to]?.push({   neighbor: e.from, edgeId: e.id });
+    });
+
+    if (!adj[fromId] || !adj[toId]) return null;
+
+    // BFS
+    const prev = {}; // nodeId -> { nodeId, edgeId }
+    const visited = new Set([fromId]);
+    const queue = [fromId];
+
+    while (queue.length) {
+      const cur = queue.shift();
+      if (cur === toId) break;
+      for (const { neighbor, edgeId } of adj[cur]) {
+        if (!visited.has(neighbor)) {
+          visited.add(neighbor);
+          prev[neighbor] = { node: cur, edgeId };
+          queue.push(neighbor);
+        }
+      }
+    }
+
+    if (!visited.has(toId)) return null; // disconnected
+
+    // Reconstruct path
+    const pathNodes = [];
+    const pathEdges = [];
+    let cur = toId;
+    while (cur !== fromId) {
+      pathNodes.push(cur);
+      pathEdges.push(prev[cur].edgeId);
+      cur = prev[cur].node;
+    }
+    pathNodes.push(fromId);
+    return { pathNodes, pathEdges };
+  }
+
+  function highlightPath(fromId, toId) {
+    clearPathHighlight();
+    const result = bfsShortestPath(fromId, toId);
+    if (!result) {
+      alert('No path found between these two nodes.');
+      return;
+    }
+    const { pathNodes, pathEdges } = result;
+
+    pathNodes.forEach((id) => {
+      const n = nodes.get(id);
+      highlightedNodes.push({ id, borderWidth: n.borderWidth ?? 2, color: n.color });
+      nodes.update({ id, borderWidth: 5, color: { background: n.color?.background ?? '#97c2fc', border: '#e67e22', highlight: { border: '#e67e22' } } });
+    });
+    pathEdges.forEach((id) => {
+      const e = edges.get(id);
+      highlightedEdges.push({ id, color: e.color, width: e.width ?? 2 });
+      edges.update({ id, color: { color: '#e67e22', highlight: '#e67e22' }, width: 5 });
+    });
+
+    btnClearPath.style.display = 'inline-block';
+  }
+
+  btnShortest.addEventListener('click', () => {
+    clearPathHighlight();
+    setEdgeMode(false);
+    setPathMode(!pathMode);
+  });
+
+  btnClearPath.addEventListener('click', () => {
+    clearPathHighlight();
+    setPathMode(false);
+  });
+
+  // Path node selection is handled in the existing network.on('click') handler below
+  // We inject path logic at the top of that handler.
 
   // ─── Export PNG ──────────────────────────────────────────────────────────────
   document.getElementById('btn-export').addEventListener('click', () => {
