@@ -2,6 +2,7 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
+const fs = require('fs');
 
 const app = express();
 const server = http.createServer(app);
@@ -17,6 +18,28 @@ const graph = {
 
 let nextNodeId = 1;
 let nextEdgeId = 1;
+
+const GRAPH_FILE = path.join(__dirname, 'graph.json');
+
+function loadGraph() {
+  try {
+    const data = fs.readFileSync(GRAPH_FILE, 'utf8');
+    const saved = JSON.parse(data);
+    graph.nodes = saved.nodes || [];
+    graph.edges = saved.edges || [];
+    nextNodeId = saved.nextNodeId || 1;
+    nextEdgeId = saved.nextEdgeId || 1;
+    console.log(`Loaded graph: ${graph.nodes.length} nodes, ${graph.edges.length} edges`);
+  } catch {
+    // No saved file yet — start fresh
+  }
+}
+
+function saveGraph() {
+  fs.writeFile(GRAPH_FILE, JSON.stringify({ nodes: graph.nodes, edges: graph.edges, nextNodeId, nextEdgeId }), () => {});
+}
+
+loadGraph();
 
 function broadcastCount() {
   io.emit('connect-count', io.engine.clientsCount);
@@ -39,6 +62,7 @@ io.on('connection', (socket) => {
     };
     graph.nodes.push(node);
     io.emit('node-added', node);
+    saveGraph();
   });
 
   socket.on('update-node', (data) => {
@@ -49,6 +73,7 @@ io.on('connection', (socket) => {
     if (data.y !== undefined) node.y = data.y;
     if (data.color !== undefined) node.color = data.color;
     io.emit('node-updated', node);
+    saveGraph();
   });
 
   socket.on('delete-node', (id) => {
@@ -57,6 +82,7 @@ io.on('connection', (socket) => {
     const removedEdges = graph.edges.filter((e) => e.from === id || e.to === id);
     graph.edges = graph.edges.filter((e) => e.from !== id && e.to !== id);
     io.emit('node-deleted', { id, removedEdgeIds: removedEdges.map((e) => e.id) });
+    saveGraph();
   });
 
   socket.on('add-edge', (data) => {
@@ -70,11 +96,13 @@ io.on('connection', (socket) => {
     const edge = { id: nextEdgeId++, from: data.from, to: data.to };
     graph.edges.push(edge);
     io.emit('edge-added', edge);
+    saveGraph();
   });
 
   socket.on('delete-edge', (id) => {
     graph.edges = graph.edges.filter((e) => e.id !== id);
     io.emit('edge-deleted', id);
+    saveGraph();
   });
 
   socket.on('clear-graph', () => {
@@ -83,6 +111,7 @@ io.on('connection', (socket) => {
     nextNodeId = 1;
     nextEdgeId = 1;
     io.emit('graph-cleared');
+    saveGraph();
   });
 });
 
